@@ -129,9 +129,9 @@ MAX_ATTEMPT = 4 # 最大尝试次数
 
 ## 2026修改部分
 - 1.删除了滑块部分(学校不需要)
-- 2.utils/reserve.py修复token为空时重复提交问题
-- 3.utils/reserve.py由UTC日期改为北京日期
-- 4.main.py动态计算距北京08:00的剩余秒数并等待
-- 5.main.py中对login_and_reserve()对字符串类型的seatid做转换的修复
-- 6.reserve.yml中workflow使用 -m debug改为 -m reserve实现多人预约
--7.每两个月记得提交一次防止仓库不活跃
+- 2.字符串转换修复
+- 3.多人预约问题修复
+- 4.改成并发运行
+- 5.注意事项:每两个月需手动开启github actions
+- 6.注意事项:不要使用谷歌邮箱登录的github账号使用,会出现token为空的问题
+- 7.对于GNNU该版本为最终版，可以稳定运行
