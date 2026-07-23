@@ -4,7 +4,7 @@
             "username": "",
             "password": "",
             "time": ["16:00", "21:30"],
-            "roomid": "12884",
+            "roomid": "12886",
             "seatid": "010",
             "daysofweek": ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
         },
@@ -12,7 +12,7 @@
             "username": "",
             "password": "",
             "time": ["10:00", "16:00"],
-            "roomid": "12884",
+            "roomid": "12886",
             "seatid": "010",
             "daysofweek": ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
         }
