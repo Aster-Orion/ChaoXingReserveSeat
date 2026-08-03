@@ -23,16 +23,16 @@ get_current_dayofweek = lambda action: (
     else time.strftime("%A", time.localtime(time.time()))
 )
 
-SLEEPTIME = 1.0
+SLEEPTIME = 0.3
 
 TARGET_TIME = os.getenv("TARGET_TIME", "08:00:00")
 ENDTIME = os.getenv("ENDTIME", "08:01:00")
-WARMUP_SECONDS = int(os.getenv("WARMUP_SECONDS", "3"))
+
 
 ENABLE_SLIDER = False
-MAX_ATTEMPT = 5
+MAX_ATTEMPT = 6
 RESERVE_NEXT_DAY = True
-MAX_WORKERS = 10  # 最大并行线程数，可根据需要调整
+MAX_WORKERS = 1  # 最大并行线程数，可根据需要调整
 
 def hms_to_seconds(hms: str) -> int:
     """把 08:00:00 转成当天秒数。"""
@@ -92,24 +92,8 @@ def prepare_all(users, usernames, passwords, action):
         s.get_login_status()
         s.login(username, password)
         s.requests.headers.update({"Host": "office.chaoxing.com"})
-        # 预热：提前请求一次 token 页面，让服务器/CDN缓存"热起来"
-        # 使用快速单次请求，避免重试逻辑阻塞准备阶段
-        warmup_headers = {
-            "Referer": "https://office.chaoxing.com/",
-            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-            "Host": "office.chaoxing.com",
-        }
-        for seat in seatid:
-            try:
-                s.requests.get(
-                    url=s.url.format(roomid, seat),
-                    headers=warmup_headers,
-                    timeout=5,
-                    verify=False,
-                )
-            except Exception:
-                pass  # 预热失败不影响主流程
+        
+        
         return index, {
             "s": s,
             "times": times,
@@ -174,19 +158,18 @@ def submit_all(prepared, success_list):
                 )
                 if success:
                     return index, True
-                # 失败处理：加大抖动延迟，连续失败时刷新 session
+                    
+                # 失败处理：重新获取token，保持当前登录session
                 if attempt < 3:
                     retry_delay = random.uniform(0.2, 0.6)
                     # 303 超时连续出现时刷新 session cookie
                     if "303" in (msg or ""):
                         logging.info(
-                            f"[submit_all] {username} seat={seat} 第{attempt}次失败(303超时)，"
-                            f"刷新session并等待{retry_delay:.1f}s..."
+                            f"[submit_all] {username} seat={seat} "
+                            f"第{attempt}次失败(303超时)，重新获取token，"
+                            f"等待{retry_delay:.1f}s..."
                         )
-                        try:
-                            s.get_login_status()
-                        except Exception:
-                            pass
+                        
                     else:
                         logging.info(
                             f"[submit_all] {username} seat={seat} 第{attempt}次失败，"
@@ -226,14 +209,18 @@ def main(users, action=False):
 
     # 如果已过 08:00，跳过等待直接提交
     if current_time < TARGET_TIME:
-        logging.info("[main] 预热登录完成，等待 08:00:00 整点提交...")
+        logging.info(
+            f"[main] 预热登录完成，等待 {TARGET_TIME} 整点提交..."
+        )
         while True:
             current_time = get_current_time(action)
-            if current_time >= "08:00:00":
+            if current_time >= TARGET_TIME:
                 break
             time.sleep(0.1)
     else:
-        logging.info("[main] 预热登录完成，已过 08:00，立即尝试提交...")
+        logging.info(
+            f"[main] 登录完成，已过 {TARGET_TIME}，立即尝试提交..."
+        )
 
     logging.info("[main] ⏰ 开始提交！")
     attempt_times = 0
