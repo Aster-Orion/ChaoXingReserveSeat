@@ -24,7 +24,7 @@ get_current_dayofweek = lambda action: (
 )
 
 SLEEPTIME = 1.0
-ENDTIME = "15:24:00"
+ENDTIME = "15:25:00"
 ENABLE_SLIDER = False
 MAX_ATTEMPT = 5
 RESERVE_NEXT_DAY = True
