@@ -158,9 +158,12 @@ def submit_all(prepared, success_list):
                 # 每个 seat 最多 3 次尝试，每次重新获取 token 避免 303 超时
                 for attempt in range(1, MAX_ATTEMPT + 1):
                     token, value = s._get_page_token(url, require_value=True)
-                    if not token:
-                        logging.warning(f"[submit_all] {username} seat={seat} token为空，跳过")
-                        break
+                    if not token or not value:
+                        logging.warning(
+                            f"[submit] {username} seat={seat} "
+                            f"token/value获取失败 token={bool(token)} value_len={len(value)}"
+                        )
+                        continue
                     success, msg = s.get_submit(
                         s.submit_url,
                         times=period,
