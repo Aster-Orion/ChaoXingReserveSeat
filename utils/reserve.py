@@ -177,13 +177,11 @@ class reserve:
                             html,
                             flags=re.IGNORECASE,
                         )
-                        if values:
-                            value = values[0]
-                        
-
-        if values:
-            value = values[0]
-                
+                        for v in values:
+                            if len(v) > 20:
+                                value = v
+                                break
+                                
                 
                 # 第一次失败时保存完整页面，防止 GitHub 日志只显示前300字符
                 if not token and attempt == 1:
