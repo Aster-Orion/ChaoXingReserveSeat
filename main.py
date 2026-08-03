@@ -122,7 +122,7 @@ def submit_all(prepared, success_list):
     pending = [
         (i, item)
         for i, item in enumerate(prepared)
-        if item is not None and not success_list[i]
+        if item is not None and not all(success_list[i])
     ]
     if not pending:
         return success_list
@@ -137,10 +137,15 @@ def submit_all(prepared, success_list):
         roomid = item["roomid"]
         seatid = item["seatid"]
         action = item["action"]
+
+        period_results = [False] * len(times)
         username = item.get("username", f"user{index}")
+
+        
         for seat in seatid:
             url = s.url.format(roomid, seat)
-            for period in times:
+            
+            for period_index,period in  enumerate(times):
         
                 logging.info(
                     f"[submit] {username} seat={seat} "
@@ -149,14 +154,14 @@ def submit_all(prepared, success_list):
         
                 success_period = False
                 # 每个 seat 最多 3 次尝试，每次重新获取 token 避免 303 超时
-                for attempt in range(1, 4):
+                for attempt in range(1, MAX_ATTEMPT + 1):
                     token, value = s._get_page_token(url, require_value=True)
                     if not token:
                         logging.warning(f"[submit_all] {username} seat={seat} token为空，跳过")
                         break
                     success, msg = s.get_submit(
                         s.submit_url,
-                        times=times,
+                        times=period,
                         token=token,
                         roomid=roomid,
                         seatid=seat,
@@ -165,10 +170,12 @@ def submit_all(prepared, success_list):
                         value=value,
                     )
                     if success:
-                        return index, True
+                        period_results[period_index] = True
+                        success_period = True
+                        break
                         
                     # 失败处理：重新获取token，保持当前登录session
-                    if attempt < 3:
+                    if attempt < MAX_ATTEMPT:
                         retry_delay = random.uniform(0.2, 0.6)
                         # 303 超时连续出现时刷新 session cookie
                         if "303" in (msg or ""):
@@ -190,7 +197,7 @@ def submit_all(prepared, success_list):
                         f"[submit] {username} "
                         f"{period[0]}-{period[1]}最终失败"
                     )
-        return index, False
+        return index, period_results
 
     workers = min(MAX_WORKERS, len(pending))
     with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="submit") as executor:
@@ -199,7 +206,7 @@ def submit_all(prepared, success_list):
             try:
                 idx, result = future.result()
                 if result:
-                    success_list[idx] = True
+                    success_list[idx] = result
             except Exception as e:
                 logging.error(f"[submit_all] 线程异常 index={futures[future]}: {e}")
 
@@ -214,9 +221,16 @@ def main(users, action=False):
         usernames, passwords = get_user_credentials(action)
     current_dayofweek = get_current_dayofweek(action)
     today_reservation_num = sum(
-        1 for d in users if current_dayofweek in d.get("daysofweek")
+        len(d.get("times", []))
+        for d in users
+        if current_dayofweek in d.get("daysofweek")
     )
-    success_list = [False] * len(users)
+    success_list = []
+
+    for user in users:
+        success_list.append(
+            [False] * len(user["times"])
+        )
     logging.info(f"[main] 今日待预约 {today_reservation_num}/{len(users)} 人")
 
     prepared = prepare_all(users, usernames, passwords, action)
@@ -242,10 +256,14 @@ def main(users, action=False):
     while True:
         attempt_times += 1
         success_list = submit_all(prepared, success_list)
-        done = sum(success_list)
+        done = sum(
+            sum(item)
+            for item in success_list
+        )
         current_time = get_current_time(action)
         logging.info(f"[main] 第{attempt_times}轮 {current_time}, "
                      f"已完成 {done}/{today_reservation_num}, 状态={success_list}")
+        
         if done == today_reservation_num:
             logging.info(f"[main] 🎉 全部预约成功！共 {attempt_times} 轮")
             return
