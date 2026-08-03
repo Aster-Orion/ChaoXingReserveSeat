@@ -140,42 +140,56 @@ def submit_all(prepared, success_list):
         username = item.get("username", f"user{index}")
         for seat in seatid:
             url = s.url.format(roomid, seat)
-            # 每个 seat 最多 3 次尝试，每次重新获取 token 避免 303 超时
-            for attempt in range(1, 4):
-                token, value = s._get_page_token(url, require_value=True)
-                if not token:
-                    logging.warning(f"[submit_all] {username} seat={seat} token为空，跳过")
-                    break
-                success, msg = s.get_submit(
-                    s.submit_url,
-                    times=times,
-                    token=token,
-                    roomid=roomid,
-                    seatid=seat,
-                    captcha="",
-                    action=action,
-                    value=value,
+            for period in times:
+        
+                logging.info(
+                    f"[submit] {username} seat={seat} "
+                    f"开始预约时间段 {period[0]}-{period[1]}"
                 )
-                if success:
-                    return index, True
-                    
-                # 失败处理：重新获取token，保持当前登录session
-                if attempt < 3:
-                    retry_delay = random.uniform(0.2, 0.6)
-                    # 303 超时连续出现时刷新 session cookie
-                    if "303" in (msg or ""):
-                        logging.info(
-                            f"[submit_all] {username} seat={seat} "
-                            f"第{attempt}次失败(303超时)，重新获取token，"
-                            f"等待{retry_delay:.1f}s..."
-                        )
+        
+                success_period = False
+                # 每个 seat 最多 3 次尝试，每次重新获取 token 避免 303 超时
+                for attempt in range(1, 4):
+                    token, value = s._get_page_token(url, require_value=True)
+                    if not token:
+                        logging.warning(f"[submit_all] {username} seat={seat} token为空，跳过")
+                        break
+                    success, msg = s.get_submit(
+                        s.submit_url,
+                        times=times,
+                        token=token,
+                        roomid=roomid,
+                        seatid=seat,
+                        captcha="",
+                        action=action,
+                        value=value,
+                    )
+                    if success:
+                        return index, True
                         
-                    else:
-                        logging.info(
-                            f"[submit_all] {username} seat={seat} 第{attempt}次失败，"
-                            f"刷新token重试..."
-                        )
-                    time.sleep(retry_delay)
+                    # 失败处理：重新获取token，保持当前登录session
+                    if attempt < 3:
+                        retry_delay = random.uniform(0.2, 0.6)
+                        # 303 超时连续出现时刷新 session cookie
+                        if "303" in (msg or ""):
+                            logging.info(
+                                f"[submit_all] {username} seat={seat} "
+                                f"第{attempt}次失败(303超时)，重新获取token，"
+                                f"等待{retry_delay:.1f}s..."
+                            )
+                            
+                        else:
+                            logging.info(
+                                f"[submit_all] {username} seat={seat} 第{attempt}次失败，"
+                                f"刷新token重试..."
+                            )
+                        time.sleep(retry_delay)
+                    
+                if not success_period:
+                    logging.warning(
+                        f"[submit] {username} "
+                        f"{period[0]}-{period[1]}最终失败"
+                    )
         return index, False
 
     workers = min(MAX_WORKERS, len(pending))
