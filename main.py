@@ -34,6 +34,8 @@ MAX_ATTEMPT = 6
 RESERVE_NEXT_DAY = True
 MAX_WORKERS = 1  # 最大并行线程数，可根据需要调整
 
+WARMUP_SECONDS = 5
+
 def hms_to_seconds(hms: str) -> int:
     """把 08:00:00 转成当天秒数。"""
     hour, minute, second = map(int, hms.split(":"))
