@@ -163,8 +163,26 @@ class reserve:
                 if require_value:
                     value = extract_named_value(
                         html,
-                        ("algorithm",),
+                        (
+                            "algorithm",
+                            "value",
+                            "submit_enc",
+                            "submitEnc",
+                        ),
                     )
+                    
+                    if not value:
+                        values = re.findall(
+                            r'''value\s*=\s*["']([^"']+)["']''',
+                            html,
+                            flags=re.IGNORECASE,
+                        )
+                        if values:
+                            value = values[0]
+                        
+
+        if values:
+            value = values[0]
                 
                 
                 # 第一次失败时保存完整页面，防止 GitHub 日志只显示前300字符
