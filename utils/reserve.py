@@ -1,4 +1,3 @@
-from utils import AES_Encrypt, enc, generate_captcha_key, verify_param
 import json
 import random
 import requests
@@ -6,7 +5,14 @@ import re
 import time
 import logging
 import datetime
+from utils import (
+    AES_Encrypt,
+    enc,
+    generate_captcha_key,
+    verify_param,
+)
 from urllib3.exceptions import InsecureRequestWarning
+import os
 
 
 def get_date(day_offset: int = 0):
@@ -78,6 +84,41 @@ class reserve:
         高峰期服务器负载高，可能返回空壳 HTML（未渲染 form 输入），
         采用指数退避 + 随机抖动 + 更长重试窗口来应对。
         """
+        def extract_named_value(html_text, names):
+            """
+            同时兼容：
+            <input id="submit_enc" value="xxx">
+            <input value="xxx" id="submit_enc">
+            <input id='submit_enc' value='xxx'>
+            submit_enc = "xxx"
+            submitEnc: "xxx"
+            """
+            for name in names:
+                escaped_name = re.escape(name)
+        
+                patterns = (
+                    # input 标签：属性顺序不限，单双引号均可
+                    rf'''<input\b
+                         (?=[^>]*(?:id|name)\s*=\s*["']{escaped_name}["'])
+                         [^>]*\bvalue\s*=\s*["']([^"']+)["']''',
+        
+                    # JavaScript 变量或对象字段
+                    rf'''(?:["']?{escaped_name}["']?)
+                         \s*[:=]\s*["']([^"']+)["']''',
+                )
+        
+                for pattern in patterns:
+                    match = re.search(
+                        pattern,
+                        html_text,
+                        flags=re.IGNORECASE | re.VERBOSE,
+                    )
+        
+                    if match:
+                        return match.group(1)
+        
+            return ""
+        
         fetch_headers = {
             "Referer": "https://office.chaoxing.com/",
             "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
@@ -103,34 +144,81 @@ class reserve:
                         time.sleep(delay)
                     continue
 
-                html = resp.content.decode("utf-8")
+                html = resp.text
                 html_len = len(html)
-                logging.debug(f"[token] 第{attempt}次响应长度={html_len}")
 
-                # 提取 submit_enc → token
-                token_match = re.findall(r'id="submit_enc"\s+value="(.*?)"', html)
-                token = token_match[0] if token_match else ""
-
-                # 提取 algorithm → value（多模式回退，应对页面结构变化）
+                logging.debug(
+                    f"[token] 第{attempt}次响应长度={html_len}, "
+                    f"final_url={resp.url}, "
+                    f"content_type={resp.headers.get('Content-Type', '')}"
+                )
+                
+                
+                token = extract_named_value(
+                    html,
+                    ("submit_enc", "submitEnc"),
+                )
+            
                 value = ""
                 if require_value:
-                    for regex in (
-                        r'id="algorithm"\s+value="(.*?)"',
-                        r'name="algorithm"\s+value="(.*?)"',
-                        # 兜底：匹配第一个含 value 的 input，避免拿不到值
-                        r'<input[^>]+value="(.*?)"',
-                    ):
-                        m = re.findall(regex, html)
-                        if m:
-                            value = m[0]
-                            logging.debug(f"[token] value 匹配到正则: {regex[:40]}...")
-                            break
-                    if not value:
-                        all_values = re.findall(r'value="(.*?)"', html)
+                    value = extract_named_value(
+                        html,
+                        ("algorithm",),
+                    )
+                
+                
+                # 第一次失败时保存完整页面，防止 GitHub 日志只显示前300字符
+                if not token and attempt == 1:
+                    debug_directory = os.path.join(
+                        os.getcwd(),
+                        "debug_pages",
+                    )
+                    os.makedirs(
+                        debug_directory,
+                        exist_ok=True,
+                    )
+                
+                    debug_file = os.path.join(
+                        debug_directory,
+                        f"token_fail_{time.time_ns()}.html",
+                    )
+                
+                    try:
+                        with open(
+                            debug_file,
+                            "w",
+                            encoding="utf-8",
+                        ) as file:
+                            file.write(html)
+                
                         logging.warning(
-                            f"[token] 所有 algorithm 正则均未匹配, "
-                            f"页面 value 片段(前5): {all_values[:5]}"
+                            f"[token] 失败页面已保存：{debug_file}, "
+                            f"final_url={resp.url}, "
+                            f"history={[item.status_code for item in resp.history]}"
                         )
+                    except OSError as error:
+                        logging.warning(
+                            f"[token] 保存失败页面异常：{error}"
+                        )
+                
+                
+                if require_value and not value:
+                    all_values = re.findall(
+                        r'''\bvalue\s*=\s*["']([^"']*)["']''',
+                        html,
+                        flags=re.IGNORECASE,
+                    )
+                
+                    logging.warning(
+                        f"[token] 未匹配到 algorithm，"
+                        f"页面 value 片段前5项：{all_values[:5]}"
+                    )
+                if not value:
+                    all_values = re.findall(r'value="(.*?)"', html)
+                    logging.warning(
+                        f"[token] 所有 algorithm 正则均未匹配, "
+                        f"页面 value 片段(前5): {all_values[:5]}"
+                    )
 
                 if token:
                     logging.info(
