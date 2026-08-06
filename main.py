@@ -34,7 +34,7 @@ MAX_ATTEMPT = 6
 RESERVE_NEXT_DAY = True
 MAX_WORKERS = 1  # 最大并行线程数，可根据需要调整
 
-WARMUP_SECONDS = 5
+WARMUP_SECONDS = int(os.getenv("WARMUP_SECONDS", "5"))
 
 def hms_to_seconds(hms: str) -> int:
     """把 08:00:00 转成当天秒数。"""
@@ -67,37 +67,73 @@ def wait_until_prepare(action: bool) -> None:
         )
 
 def prepare_all(users, usernames, passwords, action):
-    """并行提前登录，多个用户同时进行，大幅缩短登录等待时间"""
+    """在目标时间前完成登录；同一账号建议只保留一个配置。"""
     current_dayofweek = get_current_dayofweek(action)
     prepared = [None] * len(users)
 
+    username_list = (
+        [item.strip() for item in usernames.split(",")]
+        if action and usernames
+        else []
+    )
+    password_list = (
+        [item.strip() for item in passwords.split(",")]
+        if action and passwords
+        else []
+    )
+
     def login_one(index):
         user = users[index]
-        username, password, times, roomid, seatid, daysofweek = user.values()
-        if type(seatid) == str:
+        username = user.get("username", "")
+        password = user.get("password", "")
+        times = user.get("times", user.get("time", []))
+        roomid = user.get("roomid")
+        seatid = user.get("seatid")
+        daysofweek = user.get("daysofweek", [])
+
+        if isinstance(seatid, str):
             seatid = [seatid]
+
         if action:
-            username, password = (
-                usernames.split(",")[index],
-                passwords.split(",")[index],
-            )
+            if index >= len(username_list) or index >= len(password_list):
+                raise ValueError(
+                    f"第{index + 1}个配置缺少对应的 USERNAMES/PASSWORDS"
+                )
+            username = username_list[index]
+            password = password_list[index]
+
         if current_dayofweek not in daysofweek:
             return index, None
-        logging.info(f"[prepare] ({index+1}/{len(users)}) 并行登录: user={username}, "
-                     f"times={times}, seatid={seatid}, roomid={roomid}")
-        s = reserve(
+
+        logging.info(
+            f"[prepare] ({index + 1}/{len(users)}) 登录: "
+            f"user={username}, times={times}, seatid={seatid}, roomid={roomid}"
+        )
+
+        client = reserve(
             sleep_time=SLEEPTIME,
             max_attempt=MAX_ATTEMPT,
             enable_slider=ENABLE_SLIDER,
             reserve_next_day=RESERVE_NEXT_DAY,
         )
-        s.get_login_status()
-        s.login(username, password)
-        s.requests.headers.update({"Host": "office.chaoxing.com"})
-        
-        
+
+        client.get_login_status()
+        login_success, login_message = client.login(username, password)
+        if not login_success:
+            logging.error(
+                f"[prepare] 用户 {username} 登录失败：{login_message}"
+            )
+            return index, None
+
+        # 清除登录接口遗留的 Host、Content-Type、X-Requested-With 等请求头。
+        # Host 由 requests 根据 URL 自动生成，不手动设置。
+        client.reset_office_headers()
+
+        # 保留“热启动”，但只访问 office 首页，不提前访问 token 页面。
+        client.warmup_office_home()
+
         return index, {
-            "s": s,
+            "s": client,
             "times": times,
             "roomid": roomid,
             "seatid": seatid,
@@ -105,67 +141,94 @@ def prepare_all(users, usernames, passwords, action):
             "username": username,
         }
 
-    workers = min(MAX_WORKERS, len(users))
-    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="login") as executor:
-        futures = [executor.submit(login_one, i) for i in range(len(users))]
-        for future in as_completed(futures):
+    workers = min(MAX_WORKERS, max(1, len(users)))
+    with ThreadPoolExecutor(
+        max_workers=workers,
+        thread_name_prefix="login",
+    ) as executor:
+        future_map = {
+            executor.submit(login_one, index): index
+            for index in range(len(users))
+        }
+        for future in as_completed(future_map):
+            index = future_map[future]
             try:
-                idx, result = future.result()
-                prepared[idx] = result
-            except Exception as e:
-                logging.error(f"[prepare] 线程异常 index={idx}: {e}")
+                result_index, result = future.result()
+                prepared[result_index] = result
+            except Exception as error:
+                logging.exception(
+                    f"[prepare] 线程异常 index={index}: {error}"
+                )
 
     return prepared
 
 
 def submit_all(prepared, success_list):
-    """并行提交预约，多个用户同时抢座，互不阻塞"""
-    # 收集当前轮需要提交的项（未成功且有效）
+    """使用同一个登录 Session，依次提交尚未完成的时间段。"""
     pending = [
-        (i, item)
-        for i, item in enumerate(prepared)
-        if item is not None and not all(success_list[i])
+        (index, item)
+        for index, item in enumerate(prepared)
+        if item is not None and not all(success_list[index])
     ]
     if not pending:
         return success_list
 
     def submit_one(index, item):
-        # 随机抖动 100~800ms，同用户多时间段时增大错峰，降低303概率
-        jitter = random.uniform(0.1, 0.8)
-        time.sleep(jitter)
-
-        s = item["s"]
-        times = item["times"]
+        client = item["s"]
+        periods = item["times"]
         roomid = item["roomid"]
-        seatid = item["seatid"]
+        seatids = item["seatid"]
         action = item["action"]
-
-        period_results = [False] * len(times)
         username = item.get("username", f"user{index}")
 
-        
-        for seat in seatid:
-            url = s.url.format(roomid, seat)
-            
-            for period_index,period in  enumerate(times):
-        
+        # 必须继承上一轮结果，不能把已成功的时间段重新置为 False。
+        period_results = list(success_list[index])
+
+        for seat in seatids:
+            url = client.url.format(roomid, seat)
+
+            for period_index, period in enumerate(periods):
+                if period_results[period_index]:
+                    continue
+
+                if not isinstance(period, list) or len(period) != 2:
+                    logging.error(
+                        f"[submit] 非法时间段配置：{period!r}，"
+                        "应为 [\"08:00\", \"10:00\"]"
+                    )
+                    continue
+
                 logging.info(
                     f"[submit] {username} seat={seat} "
                     f"开始预约时间段 {period[0]}-{period[1]}"
                 )
-        
-                success_period = False
-                # 每个 seat 最多 3 次尝试，每次重新获取 token 避免 303 超时
+
                 for attempt in range(1, MAX_ATTEMPT + 1):
-                    token, value = s._get_page_token(url, require_value=True)
+                    if get_current_time(action) >= ENDTIME:
+                        logging.warning(
+                            f"[submit] 已到截止时间 {ENDTIME}，停止当前任务"
+                        )
+                        return index, period_results
+
+                    token, value = client._get_page_token(
+                        url,
+                        require_value=True,
+                        deadline_hms=ENDTIME,
+                    )
+
                     if not token or not value:
                         logging.warning(
                             f"[submit] {username} seat={seat} "
-                            f"token/value获取失败 token={bool(token)} value_len={len(value)}"
+                            f"{period[0]}-{period[1]} 第{attempt}次 "
+                            f"token/value失败：token={bool(token)}, "
+                            f"value_len={len(value)}"
                         )
+                        if attempt < MAX_ATTEMPT:
+                            time.sleep(0.15 * attempt)
                         continue
-                    success, msg = s.get_submit(
-                        s.submit_url,
+
+                    success, message = client.get_submit(
+                        client.submit_url,
                         times=period,
                         token=token,
                         roomid=roomid,
@@ -174,46 +237,57 @@ def submit_all(prepared, success_list):
                         action=action,
                         value=value,
                     )
-                    if success:
+
+                    message = message or ""
+                    if success or "已有预约" in message:
                         period_results[period_index] = True
-                        success_period = True
-                        break
-                        
-                    # 失败处理：重新获取token，保持当前登录session
-                    if attempt < MAX_ATTEMPT:
-                        retry_delay = random.uniform(0.2, 0.6)
-                        # 303 超时连续出现时刷新 session cookie
-                        if "303" in (msg or ""):
+                        if not success:
                             logging.info(
-                                f"[submit_all] {username} seat={seat} "
-                                f"第{attempt}次失败(303超时)，重新获取token，"
-                                f"等待{retry_delay:.1f}s..."
+                                f"[submit] {period[0]}-{period[1]} "
+                                "已存在预约，按完成处理"
                             )
-                            
+                        break
+
+                    if attempt < MAX_ATTEMPT:
+                        retry_delay = random.uniform(0.2, 0.45)
+                        if "303" in message:
+                            logging.info(
+                                f"[submit] 第{attempt}次出现303，"
+                                "保持当前Session，仅重新获取token"
+                            )
                         else:
                             logging.info(
-                                f"[submit_all] {username} seat={seat} 第{attempt}次失败，"
-                                f"刷新token重试..."
+                                f"[submit] 第{attempt}次失败：{message}，"
+                                "重新获取token"
                             )
                         time.sleep(retry_delay)
-                    
-                if not success_period:
+
+                if not period_results[period_index]:
                     logging.warning(
                         f"[submit] {username} "
-                        f"{period[0]}-{period[1]}最终失败"
+                        f"{period[0]}-{period[1]} 本轮未完成"
                     )
+
         return index, period_results
 
-    workers = min(MAX_WORKERS, len(pending))
-    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="submit") as executor:
-        futures = {executor.submit(submit_one, i, item): i for i, item in pending}
-        for future in as_completed(futures):
+    workers = min(MAX_WORKERS, max(1, len(pending)))
+    with ThreadPoolExecutor(
+        max_workers=workers,
+        thread_name_prefix="submit",
+    ) as executor:
+        future_map = {
+            executor.submit(submit_one, index, item): index
+            for index, item in pending
+        }
+        for future in as_completed(future_map):
+            index = future_map[future]
             try:
-                idx, result = future.result()
-                if result:
-                    success_list[idx] = result
-            except Exception as e:
-                logging.error(f"[submit_all] 线程异常 index={futures[future]}: {e}")
+                result_index, result = future.result()
+                success_list[result_index] = result
+            except Exception as error:
+                logging.exception(
+                    f"[submit_all] 线程异常 index={index}: {error}"
+                )
 
     return success_list
 
@@ -226,17 +300,18 @@ def main(users, action=False):
         usernames, passwords = get_user_credentials(action)
     current_dayofweek = get_current_dayofweek(action)
     today_reservation_num = sum(
-        len(d.get("times", []))
-        for d in users
-        if current_dayofweek in d.get("daysofweek")
+        len(user.get("times", user.get("time", [])))
+        for user in users
+        if current_dayofweek in user.get("daysofweek", [])
     )
-    success_list = []
-
-    for user in users:
-        success_list.append(
-            [False] * len(user["times"])
-        )
-    logging.info(f"[main] 今日待预约 {today_reservation_num}/{len(users)} 人")
+    success_list = [
+        [False] * len(user.get("times", user.get("time", [])))
+        for user in users
+    ]
+    logging.info(
+        f"[main] 今日待预约 {today_reservation_num} 个时间段，"
+        f"配置账号数={len(users)}"
+    )
 
     prepared = prepare_all(users, usernames, passwords, action)
 
