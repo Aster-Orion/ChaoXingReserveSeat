@@ -12,8 +12,6 @@ jobs:
     timeout-minutes: 20
 
     env:
-      TARGET_TIME: "08:00:00"
-      ENDTIME: "08:01:20"
       WARMUP_SECONDS: "5"
 
     steps:
