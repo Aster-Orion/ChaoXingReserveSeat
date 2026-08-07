@@ -3,7 +3,7 @@ name: auto_Reserve
 on:
   schedule:
     # UTC 7:00 = 北京时间次日 10:00
-    - cron: "00 07 * * *"
+    - cron: "30 21 * * *"
   workflow_dispatch:
 
 jobs:
