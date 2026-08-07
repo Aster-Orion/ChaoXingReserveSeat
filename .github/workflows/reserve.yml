@@ -2,14 +2,14 @@ name: auto_Reserve
 
 on:
   schedule:
-    # UTC 7:00 = 北京时间次日 15:00
-    - cron: "00 22 * * *"
+    # UTC 7:00 = 北京时间次日 10:00
+    - cron: "00 02 * * *"
   workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 150
+    timeout-minutes: 180
 
     env:
       WARMUP_SECONDS: "5"
