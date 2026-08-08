@@ -26,7 +26,7 @@ get_current_dayofweek = lambda action: (
 SLEEPTIME = 0.3
 
 TARGET_TIME = os.getenv("TARGET_TIME", "18:40:00")
-ENDTIME = os.getenv("ENDTIME", "18:54:20")
+ENDTIME = os.getenv("ENDTIME", "19:54:20")
 
 
 ENABLE_SLIDER = False
