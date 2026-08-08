@@ -212,7 +212,7 @@ def submit_all(prepared, success_list):
 
                     token, value = client._get_page_token(
                         url,
-                        require_value=False,,
+                        require_value=False,
                         deadline_hms=ENDTIME,
                     )
 
