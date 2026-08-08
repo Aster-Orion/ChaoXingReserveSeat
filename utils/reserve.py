@@ -507,12 +507,15 @@ class reserve:
         }
         logging.info(f"[submit] 请求参数 roomId={roomid} seatNum={seatid} "
                      f"day={day} {times[0]}~{times[1]}")
-        if value:
-            parm["enc"] = verify_param(parm, value)
-            logging.info("[submit] 签名模式=dynamic(algorithm)")
-        else:
-            parm["enc"] = enc(parm)
-            logging.info("[submit] 签名模式=legacy(enc)")
+        if not value:
+            logging.error(
+                "[submit] 当前预约页面未提供 algorithm，"
+                "不再使用旧版 enc() 强行提交，避免连续触发303"
+            )
+            return False, "missing_algorithm"
+        
+        parm["enc"] = verify_param(parm, value)
+        logging.info("[submit] 签名模式=dynamic(algorithm)")
         resp = self.requests.post(url=url, params=parm, verify=True)
         html = resp.content.decode("utf-8")
         try:
