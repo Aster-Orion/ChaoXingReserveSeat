@@ -218,11 +218,12 @@ class reserve:
                     ("algorithm",),
                 )
 
-            if token and (value or not require_value):
+            if token:
+                sign_mode = "dynamic" if value else "legacy"
                 logging.info(
                     f"[token] 第{attempt}次成功, "
                     f"token_len={len(token)}, value_len={len(value)}, "
-                    f"url={response.url}"
+                    f"sign_mode={sign_mode}, url={response.url}"
                 )
                 return token, value
 
@@ -505,7 +506,12 @@ class reserve:
         }
         logging.info(f"[submit] 请求参数 roomId={roomid} seatNum={seatid} "
                      f"day={day} {times[0]}~{times[1]}")
-        parm["enc"] = verify_param(parm, value)
+        if value:
+            parm["enc"] = verify_param(parm, value)
+            logging.info("[submit] 签名模式=dynamic(algorithm)")
+        else:
+            parm["enc"] = enc(parm)
+            logging.info("[submit] 签名模式=legacy(enc)")
         resp = self.requests.post(url=url, params=parm, verify=True)
         html = resp.content.decode("utf-8")
         try:
