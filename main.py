@@ -25,8 +25,8 @@ get_current_dayofweek = lambda action: (
 
 SLEEPTIME = 0.3
 
-TARGET_TIME = os.getenv("TARGET_TIME", "08:00:00")
-ENDTIME = os.getenv("ENDTIME", "08:01:20")
+TARGET_TIME = os.getenv("TARGET_TIME", "12:40:00")
+ENDTIME = os.getenv("ENDTIME", "12:41:20")
 
 
 ENABLE_SLIDER = False
@@ -216,16 +216,22 @@ def submit_all(prepared, success_list):
                         deadline_hms=ENDTIME,
                     )
 
-                    if not token or not value:
+                    if not token:
                         logging.warning(
                             f"[submit] {username} seat={seat} "
                             f"{period[0]}-{period[1]} 第{attempt}次 "
-                            f"token/value失败：token={bool(token)}, "
-                            f"value_len={len(value)}"
+                            "token获取失败"
                         )
                         if attempt < MAX_ATTEMPT:
                             time.sleep(0.15 * attempt)
                         continue
+
+                    if not value:
+                        logging.info(
+                            f"[submit] {username} seat={seat} "
+                            f"{period[0]}-{period[1]} 未发现algorithm，"
+                            "使用兼容签名模式"
+                        )
 
                     success, message = client.get_submit(
                         client.submit_url,
