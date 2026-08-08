@@ -227,12 +227,12 @@ def submit_all(prepared, success_list):
                         continue
 
                     if not value:
-                        logging.info(
+                        logging.error(
                             f"[submit] {username} seat={seat} "
-                            f"{period[0]}-{period[1]} 未发现algorithm，"
-                            "使用兼容签名模式"
+                            f"{period[0]}-{period[1]} 页面没有algorithm，"
+                            "当前页面安全校验方式已变化，停止自动提交"
                         )
-
+                        break
                     success, message = client.get_submit(
                         client.submit_url,
                         times=period,
