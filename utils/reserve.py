@@ -8,6 +8,7 @@ import datetime
 from utils import (
     AES_Encrypt,
     generate_captcha_key,
+    enc,
     verify_param,
 )
 from urllib3.exceptions import InsecureRequestWarning
