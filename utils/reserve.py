@@ -180,20 +180,6 @@ class reserve:
                 return "", ""
 
             try:
-                logging.warning(
-                    "[submit-debug] headers=%s",
-                    self.requests.headers
-                )
-                
-                logging.warning(
-                    "[submit-debug] cookies=%s",
-                    self.requests.cookies.get_dict()
-                )
-                
-                logging.warning(
-                    "[submit-debug] params=%s",
-                    parm
-                )
                 response = self.requests.get(
                     url=url,
                     headers=fetch_headers,
