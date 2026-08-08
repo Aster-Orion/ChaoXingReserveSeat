@@ -509,14 +509,11 @@ class reserve:
                      f"day={day} {times[0]}~{times[1]}")
         if value:
             parm["enc"] = verify_param(parm, value)
-            logging.info("[submit] 签名模式=dynamic")
+            logging.info("[submit] 签名模式=dynamic(algorithm)")
         else:
             logging.warning(
-                "[submit] 未发现algorithm，尝试原提交参数"
+                "[submit] 未发现algorithm，本次不附加enc，按原始参数提交"
             )
-        
-        parm["enc"] = verify_param(parm, value)
-        logging.info("[submit] 签名模式=dynamic(algorithm)")
         resp = self.requests.post(url=url, params=parm, verify=True)
         html = resp.content.decode("utf-8")
         try:
