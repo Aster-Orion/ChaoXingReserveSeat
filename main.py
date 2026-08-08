@@ -212,7 +212,7 @@ def submit_all(prepared, success_list):
 
                     token, value = client._get_page_token(
                         url,
-                        require_value=False,
+                        require_value=True,
                         deadline_hms=ENDTIME,
                     )
 
@@ -227,10 +227,10 @@ def submit_all(prepared, success_list):
                         continue
 
                     if not value:
-                        logging.error(
+                        logging.warning(
                             f"[submit] {username} seat={seat} "
-                            f"{period[0]}-{period[1]} 页面没有algorithm，"
-                            "当前页面安全校验方式已变化，继续提交"
+                            f"{period[0]}-{period[1]} 未发现algorithm，"
+                            "将按无algorithm诊断模式提交一次"
                         )
                         
                     success, message = client.get_submit(
