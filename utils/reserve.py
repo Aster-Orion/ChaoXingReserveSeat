@@ -1,3 +1,4 @@
+from utils import AES_Encrypt, enc, generate_captcha_key, verify_param
 import json
 import random
 import requests
@@ -5,14 +6,7 @@ import re
 import time
 import logging
 import datetime
-from utils import (
-    AES_Encrypt,
-    generate_captcha_key,
-    enc,
-    verify_param,
-)
 from urllib3.exceptions import InsecureRequestWarning
-import os
 
 
 def get_date(day_offset: int = 0):
@@ -78,240 +72,126 @@ class reserve:
         self.reserve_next_day = reserve_next_day
         requests.packages.urllib3.disable_warnings(InsecureRequestWarning)
 
-    def reset_office_headers(self):
-        """登录完成后切换为普通网页请求头，避免残留登录接口请求头。"""
-        self.requests.headers.clear()
-        self.requests.headers.update(
-            {
-                "User-Agent": (
-                    "Mozilla/5.0 (X11; Linux x86_64) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/128.0.0.0 Safari/537.36"
-                ),
-                "Accept": (
-                    "text/html,application/xhtml+xml,"
-                    "application/xml;q=0.9,image/webp,*/*;q=0.8"
-                ),
-                "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-                "Referer": "https://office.chaoxing.com/",
-                "Cache-Control": "no-cache",
-                "Pragma": "no-cache",
-                "Connection": "keep-alive",
-            }
-        )
+    def _get_page_token(self, url, require_value=False):
+        """通过 GET 获取 token 与 algorithm 值，失败时自动重试（高峰期加强版）
 
-    def warmup_office_home(self):
-        """只预热 office 域名连接；不提前访问会产生 token 的预约页面。"""
-        try:
-            response = self.requests.get(
-                "https://office.chaoxing.com/",
-                timeout=3,
-                verify=False,
-            )
-            logging.info(
-                f"[prepare] office首页热启动 HTTP={response.status_code}, "
-                f"cookie数量={len(self.requests.cookies)}"
-            )
-        except requests.RequestException as error:
-            logging.warning(
-                f"[prepare] office首页热启动失败，不影响正式提交：{error}"
-            )
-
-    def _get_page_token(
-        self,
-        url,
-        require_value=False,
-        deadline_hms=None,
-    ):
-        """获取页面中的 token 与 algorithm；采用短重试并保存诊断页面。"""
-
-        def extract_named_value(html_text, names):
-            for name in names:
-                escaped_name = re.escape(name)
-                patterns = (
-                    rf"""<input\b
-                         (?=[^>]*(?:id|name)\s*=\s*["']{escaped_name}["'])
-                         [^>]*\bvalue\s*=\s*["']([^"']+)["']""",
-                    rf"""(?:["']?{escaped_name}["']?)
-                         \s*[:=]\s*["']([^"']+)["']""",
-                )
-                for pattern in patterns:
-                    match = re.search(
-                        pattern,
-                        html_text,
-                        flags=re.IGNORECASE | re.VERBOSE,
-                    )
-                    if match:
-                        return match.group(1)
-            return ""
-
-        def deadline_reached():
-            if not deadline_hms:
-                return False
-            tz_beijing = datetime.timezone(datetime.timedelta(hours=8))
-            now_hms = datetime.datetime.now(tz_beijing).strftime("%H:%M:%S")
-            return now_hms >= deadline_hms
-
+        高峰期优化策略：
+        1. 连续空 token 或进入深度重试阶段时自动刷新 session cookie
+        2. 两阶段重试：快速阶段(前5次短间隔) + 深度阶段(后10次带session刷新)
+        3. 空壳页面(<2000字符)立即触发 session 刷新，避免无效等待
+        4. 缩短超时和基础延迟，让单次失败更快进入下一次重试
+        """
         fetch_headers = {
             "Referer": "https://office.chaoxing.com/",
-            "User-Agent": (
-                "Mozilla/5.0 (X11; Linux x86_64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/128.0.0.0 Safari/537.36"
-            ),
-            "Accept": (
-                "text/html,application/xhtml+xml,"
-                "application/xml;q=0.9,image/webp,*/*;q=0.8"
-            ),
+            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
             "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-            "Cache-Control": "no-cache",
-            "Pragma": "no-cache",
+            "Host": "office.chaoxing.com",
         }
-
-        # 外层还会继续尝试，因此这里必须短重试，不能阻塞几分钟。
-        max_retries = 3
-        base_delay = 0.15
+        # 高峰期加强：更多重试次数 + 两阶段退避，覆盖服务器恢复窗口
+        max_retries = 15
+        base_delay = 0.3  # 基础等待秒数（降低以加速重试节奏）
+        consecutive_empty = 0  # 连续空 token 计数，触发 session 刷新
 
         for attempt in range(1, max_retries + 1):
-            if deadline_reached():
-                logging.warning(
-                    f"[token] 已到截止时间 {deadline_hms}，停止获取token"
+            # 连续空 token >= 2 或进入深度重试阶段(>5)：刷新 session 后再请求
+            if consecutive_empty >= 2 or attempt > 5:
+                logging.debug(
+                    f"[token] 第{attempt}次前刷新session "
+                    f"(连续空={consecutive_empty})"
                 )
-                return "", ""
+                try:
+                    self.get_login_status()
+                except Exception:
+                    pass
+                time.sleep(random.uniform(0.1, 0.3))
 
             try:
-                response = self.requests.get(
-                    url=url,
-                    headers=fetch_headers,
-                    timeout=8,
-                    verify=False,
-                    allow_redirects=True,
+                resp = self.requests.get(
+                    url=url, headers=fetch_headers, timeout=10, verify=False
                 )
-            except requests.RequestException as error:
-                logging.warning(
-                    f"[token] 第{attempt}次请求异常：{error}"
-                )
-                if attempt < max_retries:
-                    time.sleep(base_delay * attempt)
-                continue
+                if resp.status_code != 200:
+                    logging.warning(
+                        f"[token] 第{attempt}次 GET 返回 HTTP {resp.status_code}, url={url}"
+                    )
+                    consecutive_empty += 1
+                    if attempt < max_retries:
+                        delay = base_delay * (2 ** (attempt - 1)) + random.uniform(0, 0.5)
+                        delay = min(delay, 10)
+                        time.sleep(delay)
+                    continue
 
-            html = response.text
-            html_len = len(html)
-            content_type = response.headers.get("Content-Type", "")
+                html = resp.content.decode("utf-8")
+                html_len = len(html)
+                logging.debug(f"[token] 第{attempt}次响应长度={html_len}")
 
-            if response.status_code != 200:
-                logging.warning(
-                    f"[token] 第{attempt}次 HTTP={response.status_code}, "
-                    f"final_url={response.url}"
-                )
-                if attempt < max_retries:
-                    time.sleep(base_delay * attempt)
-                continue
+                # 提取 submit_enc → token
+                token_match = re.findall(r'id="submit_enc"\s+value="(.*?)"', html)
+                token = token_match[0] if token_match else ""
 
-            token = extract_named_value(
-                html,
-                ("submit_enc", "submitEnc"),
-            )
-            value = ""
-            if require_value:
-                value = extract_named_value(
-                    html,
-                    ("algorithm",),
-                )
-
-            if token:
-                sign_mode = "dynamic" if value else "legacy"
-                logging.info(
-                    f"[token] 第{attempt}次成功, "
-                    f"token_len={len(token)}, value_len={len(value)}, "
-                    f"sign_mode={sign_mode}, url={response.url}"
-                )
-                return token, value
-
-            script_sources = re.findall(
-                r"""<script[^>]+src=["']([^"']+)["']""",
-                html,
-                flags=re.IGNORECASE,
-            )
-            diagnostic_keywords = {
-                keyword: keyword.lower() in html.lower()
-                for keyword in (
-                    "submit_enc",
-                    "algorithm",
-                    "fetch(",
-                    "axios",
-                    "captcha",
-                    "验证码",
-                    "登录",
-                    "异常",
-                )
-            }
-
-            logging.warning(
-                f"[token] 第{attempt}次未找到有效token/value, "
-                f"HTTP={response.status_code}, len={html_len}, "
-                f"content_type={content_type}, final_url={response.url}, "
-                f"cookies={len(self.requests.cookies)}, "
-                f"scripts={script_sources[:8]}, "
-                f"keywords={diagnostic_keywords}"
-            )
-
-            if attempt == 1:
-                debug_directory = os.path.join(
-                    os.getcwd(),
-                    "debug_pages",
-                )
-                os.makedirs(debug_directory, exist_ok=True)
-                timestamp = time.time_ns()
-                html_path = os.path.join(
-                    debug_directory,
-                    f"token_fail_{timestamp}.html",
-                )
-                metadata_path = os.path.join(
-                    debug_directory,
-                    f"token_fail_{timestamp}.json",
-                )
-
-                try:
-                    with open(html_path, "w", encoding="utf-8") as file:
-                        file.write(html)
-                    with open(
-                        metadata_path,
-                        "w",
-                        encoding="utf-8",
-                    ) as file:
-                        json.dump(
-                            {
-                                "status_code": response.status_code,
-                                "final_url": response.url,
-                                "content_type": content_type,
-                                "html_length": html_len,
-                                "history": [
-                                    item.status_code
-                                    for item in response.history
-                                ],
-                                "scripts": script_sources,
-                                "keywords": diagnostic_keywords,
-                                "cookies": self.requests.cookies.get_dict(),
-                            },
-                            file,
-                            ensure_ascii=False,
-                            indent=2,
+                # 提取 algorithm → value（多模式回退，应对页面结构变化）
+                value = ""
+                if require_value:
+                    for regex in (
+                        r'id="algorithm"\s+value="(.*?)"',
+                        r'name="algorithm"\s+value="(.*?)"',
+                        # 兜底：匹配第一个含 value 的 input，避免拿不到值
+                        r'<input[^>]+value="(.*?)"',
+                    ):
+                        m = re.findall(regex, html)
+                        if m:
+                            value = m[0]
+                            logging.debug(f"[token] value 匹配到正则: {regex[:40]}...")
+                            break
+                    if not value:
+                        all_values = re.findall(r'value="(.*?)"', html)
+                        logging.warning(
+                            f"[token] 所有 algorithm 正则均未匹配, "
+                            f"页面 value 片段(前5): {all_values[:5]}"
                         )
-                    logging.warning(
-                        f"[token] 诊断文件已保存：{html_path}"
-                    )
-                except OSError as error:
-                    logging.warning(
-                        f"[token] 保存诊断文件失败：{error}"
-                    )
 
-            if attempt < max_retries:
-                time.sleep(base_delay * attempt)
+                if token:
+                    logging.info(
+                        f"[token] ✅ 第{attempt}次成功, token_len={len(token)}, "
+                        f"value_len={len(value)}, url={url}"
+                    )
+                    return token, value
 
-        logging.error(
-            f"[token] 连续{max_retries}次未获取到token, url={url}"
-        )
+                # token 为空：区分"空壳页面"和"完整页面但无 token"
+                consecutive_empty += 1
+                if html_len < 2000:
+                    logging.warning(
+                        f"[token] 第{attempt}次响应过短({html_len}字符)，"
+                        f"疑似高峰期空壳页面，立即刷新session并加大等待..."
+                    )
+                    # 空壳页面：立即刷新 session，不等到下一轮
+                    try:
+                        self.get_login_status()
+                    except Exception:
+                        pass
+                else:
+                    logging.warning(
+                        f"[token] 第{attempt}次未匹配到 token, 页面长度={html_len}, "
+                        f"HTML预览(300字符): {html[:300]}"
+                    )
+                if attempt < max_retries:
+                    # 空壳页面用更长退避；正常页面用标准退避
+                    if html_len < 2000:
+                        delay = base_delay * (2 ** attempt) + random.uniform(0.5, 1.5)
+                    else:
+                        delay = base_delay * attempt + random.uniform(0, 0.3)
+                    delay = min(delay, 12)
+                    logging.debug(f"[token] 第{attempt}次失败，{delay:.1f}s 后重试...")
+                    time.sleep(delay)
+            except Exception as e:
+                consecutive_empty += 1
+                logging.warning(f"[token] 第{attempt}次请求异常: {e}")
+                if attempt < max_retries:
+                    delay = base_delay * (2 ** (attempt - 1)) + random.uniform(0, 0.5)
+                    delay = min(delay, 10)
+                    time.sleep(delay)
+
+        logging.error(f"[token] ❌ 全部{max_retries}次重试均失败, url={url}")
         return "", ""
 
     def get_login_status(self):
@@ -455,37 +335,48 @@ class reserve:
         return tl[0]
 
     def submit(self, times, roomid, seatid, action):
-        for seat in seatid:
-            suc = False
-            remaining = self.max_attempt
-            while not suc and remaining > 0:
-                token, value = self._get_page_token(
-                    self.url.format(roomid, seat), require_value=True
-                )
-                if not token:
-                    logging.warning(f"[submit] seat={seat} token为空，等待重试...")
+        for time_slot in times:
+            logging.info(f"[submit] 预约时间段 {time_slot[0]}~{time_slot[1]}")
+            slot_success = False
+            for seat in seatid:
+                suc = False
+                remaining = self.max_attempt
+                while not suc and remaining > 0:
+                    token, value = self._get_page_token(
+                        self.url.format(roomid, seat), require_value=True
+                    )
+                    if not token:
+                        logging.warning(f"[submit] seat={seat} token为空，等待重试...")
+                        time.sleep(self.sleep_time)
+                        remaining -= 1
+                        continue
+                    captcha = self.resolve_captcha() if self.enable_slider else ""
+                    if captcha:
+                        logging.info(f"[submit] 滑块验证码: {captcha[:20]}...")
+                    suc, _ = self.get_submit(
+                        self.submit_url,
+                        times=time_slot,
+                        token=token,
+                        roomid=roomid,
+                        seatid=seat,
+                        captcha=captcha,
+                        action=action,
+                        value=value,
+                    )
+                    if suc:
+                        slot_success = True
+                        break
                     time.sleep(self.sleep_time)
                     remaining -= 1
-                    continue
-                captcha = self.resolve_captcha() if self.enable_slider else ""
-                if captcha:
-                    logging.info(f"[submit] 滑块验证码: {captcha[:20]}...")
-                suc, _ = self.get_submit(
-                    self.submit_url,
-                    times=times,
-                    token=token,
-                    roomid=roomid,
-                    seatid=seat,
-                    captcha=captcha,
-                    action=action,
-                    value=value,
+                if slot_success:
+                    break
+                logging.warning(f"[submit] seat={seat} 已耗尽所有尝试次数")
+            if not slot_success:
+                logging.warning(
+                    f"[submit] 时间段 {time_slot[0]}~{time_slot[1]} 预约失败"
                 )
-                if suc:
-                    return suc
-                time.sleep(self.sleep_time)
-                remaining -= 1
-            logging.warning(f"[submit] seat={seat} 已耗尽所有尝试次数")
-        return False
+                return False
+        return True
 
     def get_submit(
         self, url, times, token, roomid, seatid, captcha="", action=False, value=""
@@ -507,13 +398,7 @@ class reserve:
         }
         logging.info(f"[submit] 请求参数 roomId={roomid} seatNum={seatid} "
                      f"day={day} {times[0]}~{times[1]}")
-        if value:
-            parm["enc"] = verify_param(parm, value)
-            logging.info("[submit] 签名模式=dynamic(algorithm)")
-        else:
-            logging.warning(
-                "[submit] 未发现algorithm，本次不附加enc，按原始参数提交"
-            )
+        parm["enc"] = verify_param(parm, value)
         resp = self.requests.post(url=url, params=parm, verify=True)
         html = resp.content.decode("utf-8")
         try:
