@@ -1,6 +1,6 @@
 name: auto_Reserve
 
-on:
+off:
   schedule:
     # UTC 22:00 = 北京时间次日 6:00
     - cron: "00 22 * * *"
